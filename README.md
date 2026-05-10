@@ -1,6 +1,8 @@
 <img width="128" height="128" alt="BetterSearchIcon" src="https://github.com/user-attachments/assets/c8893d36-2351-4199-881e-ce5ca07e87c1" />
 A quick and advanced file searcher built with Python using only built-in libraries.
 
+Search for files using a bunch of advanced filters or even find duplicate files!
+
 You can filter on all of these:
 - Type: File/Folder/Both
 - Regex file name patterns
