@@ -13,6 +13,7 @@ You can filter on all of these:
 - Sibling files/folders!
 - Sibling file contents!
 
+Additional QoL features
 - Search settings save to JSON
 - Export search results to a TXT
 - Open the file in Explorer or simply copy the name or path!
