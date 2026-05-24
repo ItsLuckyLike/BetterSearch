@@ -4,7 +4,7 @@
 Light-weight, fast and advanced. Search for files or duplicates using many advanced filters. You can easily manage the results, too!
 If you work a lot with files, or, need to manage your 9.5-year-old family photo's back-up HDD, BetterSearch is your go-to.
 
-![Download](https://img.shields.io/badge/Download_latest_version-v1.1.0-00f000)
+[![Download](https://img.shields.io/badge/Download_latest_version-v1.1.0-00f000)](https://github.com/itsLuckyLike/BetterSearch/releases/v1.1.0)
  
 ### Why BetterSearch?
 Traditional search tools are often slow and cannot filter by complex metadata or perform batch operations on results. BetterSearch gives you granular control over your file system without the indexing overhead.
