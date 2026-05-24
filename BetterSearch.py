@@ -20,15 +20,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OU
 SOFTWARE.
 """
 
+version = "1.1.0"
+
 import os
 import json
 import platform
 import subprocess
 import threading
 import ctypes
+from ctypes import wintypes
 import re
 import time
 import hashlib
+import shutil
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -38,14 +42,33 @@ from datetime import datetime
 BG = "#101010"   # main background
 BG_PANEL = "#202020"   # label-frame panels
 BG_INPUT = "#000000"   # entry / combo fields
-FG = "#c9d1d9"
+FG = "#cddad3"
 FG_DIM = "#acbacc"
 GREEN = "#3fb950"
-GREEN_HI = "#56d364"
 BORDER = "#303830"
-SEL_BG = "#1f6feb"
+SEL_BG = "#0B244A"
+FILE_COPIED= "#86aedb"
+FILE_RENAMED = "#ded4af"
+FILE_DELETED = "#e6b0b0"
+FILE_MOVED = "#707880"
+FILE_RENAMED_STALE = "#707880"
 # TAG_ODD = "#080808"
 # TAG_EVEN = "#181818"
+
+# -- Colour Palette (Light) ---------------------------------------------------
+BG_L = "#f0f0f0"
+BG_PANEL_L = "#e0e0e0"
+BG_INPUT_L = "#ffffff"
+FG_L = "#2a302b"
+FG_DIM_L = "#57606a"
+GREEN_L = "#1c883a"
+BORDER_L = "#d0d7de"
+SEL_BG_L = "#0B244A"
+FILE_COPIED_L = "#1e55a2"
+FILE_RENAMED_L = "#826401"
+FILE_DELETED_L = "#92161e"
+FILE_MOVED_L = "#57606a"
+FILE_RENAMED_STALE_L = "#57606a"
 
 SETTINGS_FILE = re.sub(".py", ".settings.json", str(os.path.realpath(__file__)))
 
@@ -58,14 +81,11 @@ def fmt_size(n):
         n /= 1024
     return f"{n:.1f} TB"
 
-
 def fmt_date(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
-
 def get_ctime(st):
     return getattr(st, "st_birthtime", st.st_ctime)
-
 
 def file_hash(path):
     h = hashlib.md5()
@@ -74,6 +94,45 @@ def file_hash(path):
             h.update(chunk)
     return h.hexdigest()
 
+def send_to_trash(paths):
+    sys_name = platform.system()
+    if sys_name == "Windows":
+        p_from = "\x00".join(str(Path(p).resolve()) for p in paths) + "\x00\x00"
+        
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", ctypes.c_wchar_p),
+                ("pTo", ctypes.c_wchar_p),
+                ("fFlags", ctypes.c_ushort),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", wintypes.LPVOID),
+                ("lpszProgressTitle", ctypes.c_wchar_p),
+            ]
+        
+        struct = SHFILEOPSTRUCTW()
+        struct.hwnd = 0
+        struct.wFunc = 3  # FO_DELETE
+        struct.pFrom = p_from
+        struct.pTo = None
+        struct.fFlags = 0x0040 | 0x0010  # FOF_ALLOWUNDO | FOF_NOCONFIRMATION
+        struct.fAnyOperationsAborted = False
+        struct.hNameMappings = None
+        struct.lpszProgressTitle = None
+        
+        res = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(struct))
+        return res == 0 and not struct.fAnyOperationsAborted
+    elif sys_name == "Darwin":
+        success = True
+        for p in paths:
+            abs_p = str(Path(p).resolve())
+            cmd = ["osascript", "-e", f'tell application "Finder" to delete POSIX file "{abs_p}"']
+            res = subprocess.run(cmd, capture_output=True)
+            if res.returncode != 0:
+                success = False
+        return success
+    return False
 
 def apply_dark_theme(root):
     s = ttk.Style(root)
@@ -83,6 +142,7 @@ def apply_dark_theme(root):
     s.configure("TLabelframe", background=BG_PANEL, foreground=GREEN, bordercolor=BORDER, relief="groove")
     s.configure("TLabelframe.Label", background=BG, foreground=GREEN, font=("Consolas", 9, "bold"))
     s.configure("TLabel", background=BG, foreground=FG)
+    s.configure("Panel.TLabel", background=BG_PANEL, foreground=FG_DIM) 
     s.configure("TEntry", fieldbackground=BG_INPUT, foreground=FG, insertcolor=GREEN, bordercolor=BORDER, selectbackground=SEL_BG)
     s.configure("TCombobox", fieldbackground=BG_INPUT, foreground=FG, selectbackground=SEL_BG, bordercolor=BORDER, arrowcolor=GREEN)
     s.map("TCombobox", fieldbackground=[("readonly", BG_INPUT)], foreground=[("readonly", FG)], selectbackground=[("readonly", SEL_BG)])
@@ -95,83 +155,143 @@ def apply_dark_theme(root):
     s.configure("TProgressbar", background=GREEN, troughcolor=BG_INPUT, bordercolor=BORDER)
     s.configure("Treeview", background=BG_INPUT, foreground=FG, fieldbackground=BG_INPUT, bordercolor=BORDER, rowheight=20, font=("Consolas", 9))
     s.configure("Treeview.Heading", background=BG_PANEL, foreground=GREEN, font=("Consolas", 9, "bold"), relief="flat")
-    s.map("Treeview", background=[("selected", SEL_BG)], foreground=[("selected", FG)])
+    s.map("Treeview", background=[("selected", SEL_BG)])
     root.configure(background=BG)
 
+def apply_light_theme(root):
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    s.configure(".", background=BG_L, foreground=FG_L, font=("Consolas", 9), bordercolor=BORDER_L, darkcolor=BG_L, lightcolor=BG_L)
+    s.configure("TFrame", background=BG_L)
+    s.configure("TLabelframe", background=BG_PANEL_L, foreground=GREEN_L, bordercolor=BORDER_L, relief="groove")
+    s.configure("TLabelframe.Label", background=BG_L, foreground=GREEN_L, font=("Consolas", 9, "bold"))
+    s.configure("TLabel", background=BG_L, foreground=FG_L)
+    s.configure("Panel.TLabel", background=BG_PANEL_L, foreground=FG_DIM_L) 
+    s.configure("TEntry", fieldbackground=BG_INPUT_L, foreground=FG_L, insertcolor=GREEN_L, bordercolor=BORDER_L, selectbackground=SEL_BG_L)
+    s.configure("TCombobox", fieldbackground=BG_INPUT_L, foreground=FG_L, selectbackground=SEL_BG_L, bordercolor=BORDER_L, arrowcolor=GREEN_L)
+    s.map("TCombobox", fieldbackground=[("readonly", BG_INPUT_L)], foreground=[("readonly", FG_L)], selectbackground=[("readonly", SEL_BG_L)])
+    s.configure("TCheckbutton", background=BG_PANEL_L, foreground=FG_L)
+    s.map("TCheckbutton", background=[("active", BG_PANEL_L)], foreground=[("active", GREEN_L)])
+    s.configure("TButton", background=BG_INPUT_L, foreground=GREEN_L, bordercolor=BORDER_L, padding=5)
+    s.map("TButton", background=[("active", "#eaeef2"), ("disabled", BG_L)], foreground=[("disabled", FG_DIM_L)])
+    s.configure("TScrollbar", background=BG_PANEL_L, troughcolor=BG_INPUT_L, bordercolor=BORDER_L, arrowcolor=FG_DIM_L)
+    s.configure("TSeparator", background=BORDER_L)
+    s.configure("TProgressbar", background=GREEN_L, troughcolor=BG_INPUT_L, bordercolor=BORDER_L)
+    s.configure("Treeview", background=BG_INPUT_L, foreground=FG_L, fieldbackground=BG_INPUT_L, bordercolor=BORDER_L, rowheight=20, font=("Consolas", 9))
+    s.configure("Treeview.Heading", background=BG_PANEL_L, foreground=GREEN_L, font=("Consolas", 9, "bold"), relief="flat")
+    s.map("Treeview", background=[("selected", SEL_BG_L)])
+    root.configure(background=BG_L)
 
 class BetterSearch:
     def __init__(self, root):
         self.root = root
-        self.root.title("BetterSearch")
-        self.root.geometry("1600x860")
+        self.root.title(f"BetterSearch v{version}")
+        self.root.geometry("1200x645")
         self.target_folder = ""
         self.is_searching = False
         self.stop_requested = False
         self.files_processed = 0
-        apply_dark_theme(root)
+        self.current_theme = "dark"
+        
+        # Track completed operations for Undo
+        self.transaction_ledger = []
+        
+        # Interactive thread resolution
+        self.resolve_event = threading.Event()
+        self.resolve_choice = None
+        
         self.build_ui()
         self.load_settings()
+        self.update_tree_tags()
+        if self.current_theme == "dark":
+            apply_dark_theme(root)
+        else:
+            apply_light_theme(root)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # --------------- UI BUILD ---------------------------------------------------
     def build_ui(self):
-        self.root.columnconfigure(0, weight=1)
-        self.root.columnconfigure(1, weight=3)
-        self.root.columnconfigure(2, weight=4)
-        self.root.rowconfigure(0, weight=1)
+        self.main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        self.main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # -- LEFT PANEL ----------------------------------------------------------
-        left_frame = ttk.LabelFrame(self.root, text="Source", padding=10)
-        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-
-        self.license = ttk.Label(left_frame, text="Copyright (c) 2026 ItsLuckyLike", wraplength=150, foreground=FG_DIM, background=BG_PANEL)
-        self.license.pack(side="bottom", fill=tk.X, pady=5)
-
-        ttk.Button(left_frame, text="Browse Folder", command=self.select_folder).pack(fill=tk.X)
-        self.lbl_folder = ttk.Label(left_frame, text="No folder selected", wraplength=150, foreground=FG_DIM, background=BG_PANEL)
+        self.left_frame = ttk.LabelFrame(self.main_pane, text="Source", padding=10)
+        self.main_pane.add(self.left_frame, weight=0)
+        
+        ttk.Button(self.left_frame, text="Browse Folder", command=self.select_folder).pack(fill=tk.X)
+        self.lbl_folder = ttk.Label(self.left_frame, text="No folder selected", wraplength=150, style="Panel.TLabel", foreground="#ff0000")
         self.lbl_folder.pack(fill=tk.X, pady=10)
-        ttk.Separator(left_frame, orient="horizontal").pack(fill=tk.X, pady=5)
-        ttk.Button(left_frame, text="Export Results", command=self.export_results).pack(fill=tk.X, pady=2)
+        
+        ttk.Separator(self.left_frame, orient="horizontal").pack(fill=tk.X, pady=5)
+        
+        self.btn_undo = ttk.Button(self.left_frame, text="⟲ Undo Last Action", state=tk.DISABLED, command=self.undo_last_action)
+        self.btn_undo.pack(fill=tk.X, pady=(2, 2))
+        
+        ttk.Button(self.left_frame, text="Export Results", command=self.export_results).pack(fill=tk.X, pady=2)
+        
+        # Theme & License stacking correctly at the bottom 
+        self.license = ttk.Label(self.left_frame, text="Copyright (c) 2026 ItsLuckyLike", wraplength=150, style="Panel.TLabel")
+        self.license.pack(side="bottom", fill=tk.X, pady=5)
+        
+        self.btn_theme = ttk.Button(self.left_frame, text="🌓 Toggle Theme", command=self.toggle_theme)
+        self.btn_theme.pack(side="bottom", fill=tk.X, pady=(5, 2))
 
-        # -- MIDDLE PANEL (scrollable canvas) ------------------------------------
-        mid_canvas = tk.Canvas(self.root, highlightthickness=0, background=BG, width=280)
-        mid_scroll = ttk.Scrollbar(self.root, orient="vertical", command=mid_canvas.yview)
-        scroll_frame = ttk.Frame(mid_canvas)
-        scroll_frame.bind("<Configure>", lambda e: mid_canvas.configure(scrollregion=mid_canvas.bbox("all")))
-        mid_canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        mid_canvas.configure(yscrollcommand=mid_scroll.set)
-        mid_canvas.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        mid_scroll.grid(row=0, column=1, sticky="nse")
-        mid_canvas.bind_all("<MouseWheel>", lambda e: mid_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        # -- MIDDLE PANEL --------------------------------------------------------
+        self.mid_container = ttk.Frame(self.main_pane)
+        self.main_pane.add(self.mid_container, weight=0)
+
+        # Bottom section of middle pane (Search Controls always visible)
+        self.search_ctrl_frame = ttk.Frame(self.mid_container, padding=5)
+        self.search_ctrl_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        btn_container = ttk.Frame(self.search_ctrl_frame)
+        btn_container.pack(fill=tk.X, pady=5)
+        btn_container.columnconfigure(0, weight=70)
+        btn_container.columnconfigure(1, weight=30)
+        self.btn_search = ttk.Button(btn_container, text="▶  Start Search", command=self.start_search_thread)
+        self.btn_search.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self.btn_dupes = ttk.Button(btn_container, text="⊕  Dupes", command=self.start_dupe_thread)
+        self.btn_dupes.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
+        self.progress = ttk.Progressbar(self.search_ctrl_frame, orient="horizontal", mode="indeterminate")
+        self.progress.pack(fill=tk.X, pady=(5, 2))
+        self.lbl_counter = ttk.Label(self.search_ctrl_frame, text=f"Found: 0  /  Scanned: 0", foreground=GREEN)
+        self.lbl_counter.pack()
+
+        # Top section of middle pane (Scrollable Canvas for Parameters)
+        self.mid_canvas = tk.Canvas(self.mid_container, highlightthickness=0, background=BG, width=320)
+        mid_scroll = ttk.Scrollbar(self.mid_container, orient="vertical", command=self.mid_canvas.yview)
+        
+        self.mid_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        mid_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.scroll_frame = ttk.Frame(self.mid_canvas)
+        self.scroll_frame.bind("<Configure>", lambda e: self.mid_canvas.configure(scrollregion=self.mid_canvas.bbox("all")))
+        self.mid_canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        self.mid_canvas.configure(yscrollcommand=mid_scroll.set)
+        self.mid_canvas.bind_all("<MouseWheel>", lambda e: self.mid_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         # -- Basic Filters ------------------------------------------------------
-        core_grp = ttk.LabelFrame(scroll_frame, text="Basic Filters", padding=10)
+        core_grp = ttk.LabelFrame(self.scroll_frame, text="Basic Filters", padding=10)
         core_grp.pack(fill=tk.X, padx=5, pady=5)
-
         self.add_label(core_grp, "Search For:")
         self.cb_file_type = self.add_combo(core_grp, ["File", "Folder", "Both"], "File")
-
         self.add_label(core_grp, "Name Pattern:")
         self.ent_name = self.add_entry(core_grp, "*")
         self.var_name_regex = tk.BooleanVar(value=False)
         ttk.Checkbutton(core_grp, text="Disable regex", variable=self.var_name_regex).pack(anchor="w", pady=(0, 5))
-
         self.add_label(core_grp, "Exclude Names (semicolon separated):")
         self.ent_exclude = self.add_entry(core_grp, ".*")
-
         self.add_label(core_grp, "Extensions  (.py;.txt = include  -.exe = exclude):")
         self.ent_ext = self.add_entry(core_grp, "")
-
         ttk.Separator(core_grp, orient="horizontal").pack(fill=tk.X, pady=5)
         self.add_label(core_grp, "File Content Filter:")
-        self.cb_cont_mode = self.add_combo(
-            core_grp, ["Disabled", "Contains", "Does Not Contain", "Matches Regex"], "Disabled")
+        self.cb_cont_mode = self.add_combo(core_grp, ["Disabled", "Contains", "Does Not Contain", "Matches Regex"], "Disabled")
         self.ent_cont_text = self.add_entry(core_grp, "")
 
         # -- File Attributes ----------------------------------------------------
-        meta_grp = ttk.LabelFrame(scroll_frame, text="File Attributes", padding=10)
+        meta_grp = ttk.LabelFrame(self.scroll_frame, text="File Attributes", padding=10)
         meta_grp.pack(fill=tk.X, padx=5, pady=5)
-
         self.add_label(meta_grp, "Min Size (kB):")
         self.ent_min_size = self.add_entry(meta_grp, "0")
         self.add_label(meta_grp, "Max Size (kB, 0 = disabled):")
@@ -180,53 +300,32 @@ class BetterSearch:
         self.ent_days = self.add_entry(meta_grp, "0")
         self.add_label(meta_grp, "Created* within last # days (0 = disabled):")
         self.ent_cdays = self.add_entry(meta_grp, "0")
-        ttk.Label(meta_grp, text="* Linux: metadata-change time, not birth time.", foreground=FG_DIM, font=("Consolas", 8), background=BG_PANEL).pack(anchor="w", pady=(0, 2))
+        ttk.Label(meta_grp, text="* Linux: metadata-change time, not birth time.", style="Panel.TLabel", font=("Consolas", 8)).pack(anchor="w", pady=(0, 2))
 
         # -- Search Settings ----------------------------------------------------
-        srch_grp = ttk.LabelFrame(scroll_frame, text="Search Settings", padding=10)
+        srch_grp = ttk.LabelFrame(self.scroll_frame, text="Search Settings", padding=10)
         srch_grp.pack(fill=tk.X, padx=5, pady=5)
-
         self.add_label(srch_grp, "Max Depth (0 = unlimited):")
         self.ent_depth = self.add_entry(srch_grp, "0")
 
         # -- Sibling Constraints ------------------------------------------------
-        fell_grp = ttk.LabelFrame(scroll_frame, text="Sibling Constraints", padding=10)
+        fell_grp = ttk.LabelFrame(self.scroll_frame, text="Sibling Constraints", padding=10)
         fell_grp.pack(fill=tk.X, padx=5, pady=5)
-
-        self.cb_fell_type = self.add_combo(
-            fell_grp, ["Disabled", "Has Sibling File", "Has Sibling Folder", "No Sibling File", "No Sibling Folder"], "Disabled")
+        self.cb_fell_type = self.add_combo(fell_grp, ["Disabled", "Has Sibling File", "Has Sibling Folder", "No Sibling File", "No Sibling Folder"], "Disabled")
         self.add_label(fell_grp, "Sibling Name Pattern:")
         self.ent_fell_name = self.add_entry(fell_grp, "*")
         self.add_label(fell_grp, "Sibling Content Filter:")
-        self.cb_fell_cont_mode = self.add_combo(
-            fell_grp, ["Disabled", "Contains", "Does Not Contain", "Matches Regex"], "Disabled")
+        self.cb_fell_cont_mode = self.add_combo(fell_grp, ["Disabled", "Contains", "Does Not Contain", "Matches Regex"], "Disabled")
         self.ent_fell_cont_text = self.add_entry(fell_grp, "")
 
-        # -- Search Controls ----------------------------------------------------
-        btn_container = ttk.Frame(scroll_frame)
-        btn_container.pack(fill=tk.X, pady=10, padx=5)
-        btn_container.columnconfigure(0, weight=70)
-        btn_container.columnconfigure(1, weight=30)
-
-        self.btn_search = ttk.Button(btn_container, text="▶  Start Search", command=self.start_search_thread)
-        self.btn_search.grid(row=0, column=0, sticky="ew", padx=(0, 2))
-
-        self.btn_dupes = ttk.Button(btn_container, text="⊕  Dupes", command=self.start_dupe_thread)
-        self.btn_dupes.grid(row=0, column=1, sticky="ew", padx=(2, 0))
-
-        self.progress = ttk.Progressbar(scroll_frame, orient="horizontal", mode="indeterminate")
-        self.progress.pack(fill=tk.X, padx=5, pady=(5, 2))
-        self.lbl_counter = ttk.Label(scroll_frame, text=f"Found: 0  /  Scanned: 0", foreground=GREEN, background=BG)
-        self.lbl_counter.pack()
-
         # -- RIGHT PANEL --------------------------------------------------------
-        right_frame = ttk.LabelFrame(self.root, text="Results", padding=5)
-        right_frame.grid(row=0, column=2, sticky="nsew", padx=5, pady=5)
+        right_frame = ttk.LabelFrame(self.main_pane, text="Results", padding=5)
+        self.main_pane.add(right_frame, weight=1)
         right_frame.rowconfigure(0, weight=1)
         right_frame.columnconfigure(0, weight=1)
 
         cols = ("size", "created", "modified")
-        self.tree = ttk.Treeview(right_frame, columns=cols, show="tree headings", selectmode="browse")
+        self.tree = ttk.Treeview(right_frame, columns=cols, show="tree headings", selectmode="extended")
         self.tree.heading("#0", text="Path", anchor="w")
         self.tree.heading("size", text="Size", anchor="e")
         self.tree.heading("created", text="Created*", anchor="w")
@@ -236,9 +335,12 @@ class BetterSearch:
         self.tree.column("created", width=130, stretch=False)
         self.tree.column("modified", width=130, stretch=False)
 
-        # self.tree.tag_configure("dup_odd", background=TAG_ODD)
-        # self.tree.tag_configure("dup_even", background=TAG_EVEN)
         self.tree.tag_configure("group", foreground=GREEN, font=("Consolas", 9, "bold"))
+        self.tree.tag_configure("copied")
+        self.tree.tag_configure("renamed")
+        self.tree.tag_configure("deleted")
+        self.tree.tag_configure("moved")
+        self.tree.tag_configure("renamed_stale")
 
         vsb = ttk.Scrollbar(right_frame, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(right_frame, orient="horizontal", command=self.tree.xview)
@@ -248,20 +350,29 @@ class BetterSearch:
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
 
+        # Keybind for Select All
+        self.tree.bind("<Control-a>", self.select_all)
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
 
         self.ctx_menu = tk.Menu(self.root, tearoff=0, bg=BG_INPUT, fg=FG, activebackground=SEL_BG, activeforeground=FG, font=("Consolas", 9))
-        self.ctx_menu.add_command(label="Open Location", command=self.open_selected)
+        self.ctx_menu.add_command(label="Open Location", command=self.open_location_selected)
         self.ctx_menu.add_command(label="Copy Full Path", command=self.copy_path)
         self.ctx_menu.add_command(label="Copy Filename", command=self.copy_filename)
+        self.ctx_menu.add_separator()
+        self.ctx_menu.add_command(label="Copy To...", command=lambda: self.show_transfer_dialog("copy"))
+        self.ctx_menu.add_command(label="Move To...", command=lambda: self.show_transfer_dialog("move"))
+        self.ctx_menu.add_command(label="Rename", command=self.rename_selected)
+        self.ctx_menu.add_command(label="Delete", command=self.delete_selected)
+        self.ctx_menu.add_separator()
+        self.ctx_menu.add_command(label="Select All", command=self.select_all)
         self.tree.bind("<Button-3>", self.show_context_menu)
 
-        self.txt_log = tk.Text(right_frame, height=3, state=tk.DISABLED, background=BG_INPUT, foreground=FG_DIM, insertbackground=GREEN, font=("Consolas", 8), borderwidth=0)
+        self.txt_log = tk.Text(right_frame, height=6, state=tk.DISABLED, background=BG_INPUT, foreground=FG_DIM, insertbackground=GREEN, font=("Consolas", 8), borderwidth=0)
         self.txt_log.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0))
 
     # -- UI Helpers --------------------------------------------------------------
     def add_label(self, parent, text):
-        ttk.Label(parent, text=text, foreground=FG_DIM, background=BG_PANEL).pack(anchor="w")
+        ttk.Label(parent, text=text, style="Panel.TLabel").pack(anchor="w")
 
     def add_entry(self, parent, default):
         e = ttk.Entry(parent)
@@ -276,65 +387,647 @@ class BetterSearch:
         return c
 
     def log(self, msg):
-        self.txt_log.config(state=tk.NORMAL)
-        self.txt_log.insert(tk.END, f"> {msg}\n")
-        self.txt_log.see(tk.END)
-        self.txt_log.config(state=tk.DISABLED)
+        def _append():
+            self.txt_log.config(state=tk.NORMAL)
+            self.txt_log.insert(tk.END, f"> {msg}\n")
+            self.txt_log.see(tk.END)
+            self.txt_log.config(state=tk.DISABLED)
+        self.root.after(0, _append)
+    
+    def update_tree_tags(self): # Determine the colors based on the current theme
+        if self.current_theme == "dark":
+            colors = {
+                "copied": FILE_COPIED,
+                "renamed": FILE_RENAMED,
+                "deleted": FILE_DELETED,
+                "moved": FILE_MOVED,
+                "renamed_stale": FILE_RENAMED_STALE
+            }
+        else:
+            colors = {
+                "copied": FILE_COPIED_L,
+                "renamed": FILE_RENAMED_L,
+                "deleted": FILE_DELETED_L,
+                "moved": FILE_MOVED_L,
+                "renamed_stale": FILE_RENAMED_STALE_L
+            }
+        
+        for tag, color in colors.items():
+            self.tree.tag_configure(tag, foreground=color)
+    
+    def toggle_theme(self):
+        if self.current_theme == "dark":
+            self.current_theme = "light"
+            apply_light_theme(self.root)
+            self.update_tree_tags()
+        else:
+            self.current_theme = "dark"
+            apply_dark_theme(self.root)
+            self.update_tree_tags()
 
     # -- Folder ------------------------------------------------------------------
     def select_folder(self):
         f = filedialog.askdirectory()
         if f:
             self.target_folder = f
-            self.lbl_folder.config(text=f, foreground=GREEN)
+            self.lbl_folder.config(text=f, foreground=GREEN if self.current_theme == "dark" else "#1a7f37")
 
     # -- Result Interaction ------------------------------------------------------
+    def select_all(self, event=None):
+        items = []
+        def _get_items(node):
+            for child in self.tree.get_children(node):
+                items.append(child)
+                _get_items(child)
+        _get_items("")
+        if items:
+            self.tree.selection_set(items)
+        return "break"
+
     def _focused_path(self):
         sel = self.tree.focus()
         if not sel:
             return None
         if self.tree.get_children(sel) and not self.tree.parent(sel):
-            return None  # group header node
+            return None
         text = self.tree.item(sel, "text")
         return Path(text) if text else None
+
+    def _selected_paths(self):
+        items = self.tree.selection()
+        paths = []
+        for item in items:
+            if self.tree.get_children(item) and not self.tree.parent(item):
+                continue
+            text = self.tree.item(item, "text")
+            if text:
+                paths.append((item, Path(text)))
+        return paths
+
+    def open_location_selected(self):
+        path = self._focused_path()
+        if not path: return
+        d = path.parent if path.is_file() else path
+        if platform.system() == "Windows": os.startfile(d)
+        else: subprocess.Popen(["xdg-open" if platform.system() == "Linux" else "open", str(d)])
 
     def open_selected(self):
         path = self._focused_path()
         if not path:
             return
-        d = path.parent if path.is_file() else path
-        if platform.system() == "Windows":
-            os.startfile(d)
-        else:
-            subprocess.Popen(["xdg-open" if platform.system() == "Linux" else "open", str(d)])
 
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)
+            else:
+                subprocess.Popen([
+                    "xdg-open" if platform.system() == "Linux" else "open",
+                    str(path)
+                ])
+        except Exception as e:
+            self.log(f"Open failed: {e}")
+    
     def copy_path(self):
         p = self._focused_path()
         if p:
-            self.root.clipboard_clear()
             self.root.clipboard_append(str(p))
 
     def copy_filename(self):
         p = self._focused_path()
         if p:
-            self.root.clipboard_clear()
             self.root.clipboard_append(p.name)
 
     def show_context_menu(self, event):
         item = self.tree.identify_row(event.y)
         if item:
-            self.tree.focus(item)
-            self.tree.selection_set(item)
+            current_selection = self.tree.selection()
+            if item not in current_selection:
+                self.tree.focus(item)
+                self.tree.selection_set(item)
             self.ctx_menu.post(event.x_root, event.y_root)
+
+    # -- Interactive Error Resolution ---------------------------------------------
+    def ask_error_resolution(self, error_msg, filepath):
+        self.resolve_choice = None
+        self.resolve_event.clear()
+        
+        def _show_dialog():
+            top = tk.Toplevel(self.root)
+            top.title("BetterSearch - Operation Halted")
+            top.geometry("450x180")
+            top.resizable(False, False)
+            top.transient(self.root)
+            top.grab_set()
+            
+            top.configure(background=BG if self.current_theme == "dark" else BG_L)
+            
+            ttk.Label(top, text="Error Encountered", font=("Consolas", 10, "bold")).pack(pady=(15,5), padx=20, anchor="w")
+            ttk.Label(top, text=f"File: {filepath}", style="Panel.TLabel").pack(padx=20, anchor="w")
+            ttk.Label(top, text=f"Reason: {error_msg}", foreground="#ff6b6b" if self.current_theme == "dark" else "#cf222e").pack(padx=20, pady=(0,10), anchor="w")
+            
+            btn_frame = ttk.Frame(top)
+            btn_frame.pack(side="bottom", fill=tk.X, pady=15, padx=20)
+            
+            def _choose(choice):
+                self.resolve_choice = choice
+                top.destroy()
+                self.resolve_event.set()
+                
+            ttk.Button(btn_frame, text="Abort All", command=lambda: _choose("abort")).pack(side="right", padx=2)
+            ttk.Button(btn_frame, text="Skip File", command=lambda: _choose("skip")).pack(side="right", padx=2)
+            ttk.Button(btn_frame, text="Retry", command=lambda: _choose("retry")).pack(side="right", padx=2)
+            
+            top.protocol("WM_DELETE_WINDOW", lambda: _choose("abort"))
+            
+        self.root.after(0, _show_dialog)
+        self.resolve_event.wait()
+        return self.resolve_choice
+
+    # -- Operations & Undo Ledger ------------------------------------------------
+    def push_to_ledger(self, op_type, changes):
+        """Logs changes for Undo functionality."""
+        if changes:
+            self.transaction_ledger.append({"op": op_type, "changes": changes})
+            self.log(f"Transaction logged: {len(changes)} item(s). Ready for Undo.")
+            self.root.after(0, lambda: self.btn_undo.config(state=tk.NORMAL, text=f"⟲ Undo {op_type.capitalize()}"))
+
+    def undo_last_action(self):
+        if not self.transaction_ledger:
+            messagebox.showinfo("Undo", "No operations left to undo.")
+            return
+            
+        last_txn = self.transaction_ledger.pop()
+        op = last_txn["op"]
+        changes = last_txn["changes"]
+        
+        self.log(f"Reversing operation: {op} on {len(changes)} items...")
+        
+        def _run_undo():
+            success_count = 0
+            for item in changes:
+                src = item["src"]
+                dst = item["dst"]
+                try:
+                    if op == "copy":
+                        if dst.exists():
+                            if dst.is_file(): dst.unlink()
+                            else: shutil.rmtree(dst)
+                            success_count += 1
+                    elif op in ("move", "rename"):
+                        if dst.exists():
+                            dst.rename(src)
+                            success_count += 1
+                except Exception as e:
+                    self.log(f"Failed to reverse {dst.name}: {e}")
+                    
+            self.log(f"Undo complete. Reverted {success_count}/{len(changes)}.")
+            
+            def _update_button():
+                if self.transaction_ledger:
+                    next_op = self.transaction_ledger[-1]["op"]
+                    self.btn_undo.config(state=tk.NORMAL, text=f"⟲ Undo {next_op.capitalize()}")
+                else:
+                    self.btn_undo.config(state=tk.DISABLED, text="⟲ Undo Last Action")
+                    
+            self.root.after(0, _update_button)
+        
+        threading.Thread(target=_run_undo, daemon=True).start()
+
+    def show_transfer_dialog(self, op_type):
+        selected = self._selected_paths()
+        if not selected: return
+        
+        top = tk.Toplevel(self.root)
+        top.title(f"BetterSearch - Transfer Options ({op_type.capitalize()})")
+        top.geometry("550x320")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        top.configure(background=BG if self.current_theme == "dark" else BG_L)
+        
+        ttk.Label(top, text="Transfer Options", font=("Consolas", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=15, pady=(15,5))
+        
+        # Target Path Selection
+        ttk.Label(top, text="Target:").grid(row=1, column=0, sticky="w", padx=15, pady=5)
+        ent_target = ttk.Entry(top, width=45)
+        ent_target.grid(row=1, column=1, sticky="w", pady=5)
+        
+        def _browse_target():
+            d = filedialog.askdirectory(title="Select Destination Directory")
+            if d:
+                ent_target.delete(0, tk.END)
+                ent_target.insert(0, d)
+                
+        ttk.Button(top, text="Browse", command=_browse_target).grid(row=1, column=2, padx=5)
+        
+        # Options
+        var_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="Verify process integrity after transfer (File Size Validation)", variable=var_verify).grid(row=2, column=0, columnspan=3, sticky="w", padx=15, pady=2)
+        
+        var_md5 = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text="Strict MD5 Hash Validation (Slower)", variable=var_md5).grid(row=3, column=0, columnspan=3, sticky="w", padx=15, pady=2)
+        
+        ttk.Label(top, text="Collision Handling:").grid(row=4, column=0, sticky="w", padx=15, pady=5)
+        var_collision = tk.StringVar(value="auto")
+        
+        radio_frame = ttk.Frame(top)
+        radio_frame.grid(row=5, column=0, columnspan=3, sticky="w", padx=25)
+        ttk.Radiobutton(radio_frame, text="Auto-rename (e.g., file (1).txt)", value="auto", variable=var_collision).pack(anchor="w")
+        ttk.Radiobutton(radio_frame, text="Skip if name matches", value="skip", variable=var_collision).pack(anchor="w")
+        ttk.Radiobutton(radio_frame, text="Overwrite existing files", value="overwrite", variable=var_collision).pack(anchor="w")
+        
+        def _proceed():
+            target_dir = ent_target.get()
+            if not target_dir or not Path(target_dir).is_dir():
+                messagebox.showerror("Error", "Please select a valid destination directory.")
+                return
+            top.destroy()
+            threading.Thread(target=self._run_transfer_operation, args=(selected, Path(target_dir), op_type, var_collision.get(), var_verify.get(), var_md5.get()), daemon=True).start()
+
+        btn_frame = ttk.Frame(top)
+        btn_frame.grid(row=6, column=0, columnspan=3, sticky="e", padx=15, pady=15)
+        ttk.Button(btn_frame, text="Cancel", command=top.destroy).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Proceed", command=_proceed).pack(side="right", padx=5)
+
+    def _get_available_name(self, target):
+        idx = 1
+        new_target = target
+        while new_target.exists():
+            new_target = target.with_name(f"{target.stem} ({idx}){target.suffix}")
+            idx += 1
+        return new_target
+
+    def _run_transfer_operation(self, selected, dest_dir, op_type, collision_mode, verify_integrity, verify_md5):
+        self.root.after(0, lambda: self.progress.configure(mode="determinate", maximum=100))
+        self.root.after(0, lambda: self.progress.set(0))
+        
+        total = len(selected)
+        self.log(f"Starting {op_type} operation for {total} item(s) to {dest_dir}...")
+        
+        transfer_results = []
+        any_failed = False
+        aborted = False
+        ledger_entries = []
+        
+        for i, (item_id, src) in enumerate(selected):
+            if aborted: break
+            
+            if not src.exists():
+                self.log(f"Source vanished: {src}")
+                any_failed = True
+                continue
+                
+            target = dest_dir / src.name
+            
+            if target.exists():
+                if collision_mode == "skip":
+                    self.log(f"Skipped (collision): {target.name}")
+                    continue
+                elif collision_mode == "overwrite":
+                    try:
+                        if target.is_file(): target.unlink()
+                        else: shutil.rmtree(target)
+                    except Exception as e:
+                        self.log(f"Overwrite clear failed: {e}")
+                        any_failed = True
+                        continue
+                elif collision_mode == "auto":
+                    target = self._get_available_name(target)
+            
+            success = False
+            while not success and not aborted:
+                try:
+                    if src.is_file(): shutil.copy2(src, target)
+                    elif src.is_dir(): shutil.copytree(src, target, dirs_exist_ok=True)
+                    success = True
+                    self.root.after(0, lambda idx=item_id: self.tree.item(idx, tags=("copied",)))
+                    
+                    if verify_integrity and success:
+                        if not target.exists() or (src.is_file() and target.stat().st_size != src.stat().st_size):
+                            raise Exception("Integrity check failed: Size mismatch or missing target.")
+                    if verify_md5 and success and src.is_file():
+                        if file_hash(src) != file_hash(target):
+                            raise Exception("MD5 Hash validation failed.")
+                            
+                except Exception as e:
+                    choice = self.ask_error_resolution(str(e), src.name)
+                    if choice == "retry": continue
+                    elif choice == "skip": break
+                    elif choice == "abort":
+                        aborted = True
+                        break
+                        
+            if success:
+                ledger_entries.append({"src": src, "dst": target})
+                transfer_results.append((item_id, src, target, True))
+
+                if op_type == "copy":
+                    self.root.after(
+                        0,
+                        lambda idx=item_id: self.tree.item(idx, tags=("copied",))
+                    )
+            else:
+                any_failed = True
+                
+            val = int(((i + 1) / total) * 50 if op_type == "move" else ((i + 1) / total) * 100)
+            self.root.after(0, lambda v=val: self.progress.set(v))
+            
+        if op_type == "move" and not aborted:
+            if any_failed:
+                self.log("Move operation aborted source-deletion Phase 2 because validation checks failed.")
+            else:
+                self.log("Verification checks passed completely. Starting Phase 2: Source removal...")
+                for i, (item_id, src, target, success) in enumerate(transfer_results):
+                    try:
+                        if src.is_file():
+                            src.unlink()
+                        elif src.is_dir():
+                            shutil.rmtree(src)
+
+                        self.root.after(
+                            0,
+                            lambda idx=item_id, tgt=str(target):
+                                self.tree.item(idx, text=tgt, tags=("moved",))
+                        )
+                    except Exception as e:
+                        self.log(f"Failed to clear source element {src.name}: {e}")
+                    val = 50 + int(((i + 1) / total) * 50)
+                    self.root.after(0, lambda v=val: self.progress.set(v))
+        
+        self.push_to_ledger(op_type, ledger_entries)
+        
+        succeeded_count = len(ledger_entries)
+        self.log(f"Operation complete. Succeeded: {succeeded_count}/{total}.")
+        self.root.after(0, lambda: self.progress.configure(mode="indeterminate"))
+        self.root.after(0, lambda: self._prompt_update_parameters(dest_dir))
+
+    def _prompt_update_parameters(self, new_dir):
+        top = tk.Toplevel(self.root)
+        top.title("BetterSearch - Update Search Target")
+        top.geometry("450x180")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        top.configure(background=BG if self.current_theme == "dark" else BG_L)
+        
+        ttk.Label(top, text="Transfer Complete", font=("Consolas", 10, "bold")).pack(pady=(15,5), padx=20, anchor="w")
+        ttk.Label(top, text=f"Would you like to change the search target to the destination directory?\n\n{new_dir}", style="Panel.TLabel", wraplength=400).pack(padx=20, anchor="w")
+        
+        def _set_dir():
+            self.target_folder = str(new_dir)
+            self.lbl_folder.config(text=self.target_folder, foreground=GREEN if self.current_theme == "dark" else "#1a7f37")
+            self.save_settings()
+            self.log(f"Source parameter updated to: {new_dir}")
+            top.destroy()
+            
+        def _set_and_search():
+            _set_dir()
+            self.start_search_thread()
+
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(side="bottom", fill=tk.X, pady=15, padx=20)
+        ttk.Button(btn_frame, text="No", command=top.destroy).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Yes & Start Search", command=_set_and_search).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Yes", command=_set_dir).pack(side="right", padx=5)
+
+    def delete_selected(self):
+        selected = self._selected_paths()
+        if not selected: return
+            
+        top = tk.Toplevel(self.root)
+        top.title("BetterSearch - Confirm Deletion")
+        top.geometry("500x220")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        top.configure(background=BG if self.current_theme == "dark" else BG_L)
+        
+        ttk.Label(top, text="Are you sure you want to delete the selected item(s)?", font=("Consolas", 10, "bold")).pack(pady=(15,5), padx=20, anchor="w")
+        ttk.Label(top, text=f"This action will affect {len(selected)} file(s).", style="Panel.TLabel").pack(padx=20, anchor="w")
+        
+        var_trash = tk.BooleanVar(value=True)
+        chk_trash = ttk.Checkbutton(top, text="Move to Recycle Bin/Trash (Windows/macOS only)", variable=var_trash)
+        chk_trash.pack(pady=(15,5), padx=20, anchor="w")
+        
+        if platform.system() not in ("Windows", "Darwin"):
+            var_trash.set(value=False)
+            chk_trash.config(state=tk.DISABLED)
+            ttk.Label(top, text="* Native system trash features unavailable on standard Linux.", font=("Consolas", 8), foreground="#ff4444").pack(padx=20, anchor="w")
+            
+        btn_frame = ttk.Frame(top)
+        btn_frame.pack(side="bottom", fill=tk.X, pady=15, padx=20)
+        
+        def on_confirm():
+            v_trash = var_trash.get()
+            top.destroy()
+            threading.Thread(target=self._run_delete_operation, args=(selected, v_trash), daemon=True).start()
+            
+        ttk.Button(btn_frame, text="Cancel", command=top.destroy).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Delete", command=on_confirm).pack(side="right", padx=5)
+
+    def _run_delete_operation(self, selected, use_trash):
+        self.root.after(0, lambda: self.progress.configure(mode="determinate", maximum=100))
+        self.root.after(0, lambda: self.progress.set(0))
+        
+        total = len(selected)
+        deleted_count = 0
+        self.log(f"Starting cleanup sequence targeting {total} elements...")
+        
+        if use_trash and platform.system() in ("Windows", "Darwin"):
+            paths_to_trash = [p for _, p in selected]
+            try:
+                if send_to_trash(paths_to_trash):
+                    for item_id, _ in selected:
+                        self.root.after(0, lambda idx=item_id: self.tree.item(idx, tags=("deleted",)))
+                    deleted_count = total
+                    self.log(f"Successfully processed items into the system trash framework.")
+                else:
+                    self.log("Unified bulk system trash request rejected. Attempting step-by-step...")
+                    for i, (item_id, p) in enumerate(selected):
+                        if send_to_trash([p]):
+                            self.root.after(0, lambda idx=item_id: self.tree.item(idx, tags=("deleted",)))
+                            deleted_count += 1
+                        else: self.log(f"Failed handling: {p.name}")
+                        val = int(((i + 1) / total) * 100)
+                        self.root.after(0, lambda v=val: self.progress.set(v))
+            except Exception as e:
+                self.log(f"Trash ecosystem operation crash failure details: {e}")
+        else:
+            for i, (item_id, p) in enumerate(selected):
+                try:
+                    if p.is_file(): p.unlink()
+                    elif p.is_dir(): shutil.rmtree(p)
+                    self.root.after(0, lambda idx=item_id: self.tree.item(idx, tags=("deleted",)))
+                    deleted_count += 1
+                except Exception as e:
+                    self.log(f"Permanent system removal block on {p.name}: {e}")
+                val = int(((i + 1) / total) * 100)
+                self.root.after(0, lambda v=val: self.progress.set(v))
+                
+        self.log(f"Cleanup run finalized. Cleared records: {deleted_count}/{total}.")
+        self.root.after(0, lambda: self.progress.configure(mode="indeterminate"))
+
+    def rename_selected(self):
+        selected = self._selected_paths()
+        if not selected: return
+            
+        top = tk.Toplevel(self.root)
+        top.title("BetterSearch - Rename files")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+        
+        top.configure(background=BG if self.current_theme == "dark" else BG_L)
+        
+        is_single = len(selected) == 1
+        
+        if is_single:
+            top.geometry("450x120")
+            ttk.Label(top, text="New Filename:", font=("Consolas", 10, "bold")).pack(padx=15, pady=(15, 5), anchor="w")
+            ent_single = ttk.Entry(top)
+            ent_single.insert(0, selected[0][1].name)
+            ent_single.pack(fill=tk.X, padx=15, pady=2)
+            
+            def _run_single():
+                new_name = ent_single.get()
+                top.destroy()
+                threading.Thread(target=self._run_rename_single, args=(selected[0], new_name), daemon=True).start()
+                
+            btn_frame = ttk.Frame(top)
+            btn_frame.pack(side="bottom", fill=tk.X, pady=10, padx=15)
+            ttk.Button(btn_frame, text="Cancel", command=top.destroy).pack(side="right", padx=5)
+            ttk.Button(btn_frame, text="Rename", command=_run_single).pack(side="right", padx=5)
+        else:
+            top.geometry("550x350")
+            
+            # Find & Replace Section
+            grp_fr = ttk.LabelFrame(top, text="Find & Replace", padding=10)
+            grp_fr.pack(fill=tk.X, padx=15, pady=10)
+            
+            ttk.Label(grp_fr, text="Find Pattern:").grid(row=0, column=0, sticky="w", pady=2)
+            ent_find = ttk.Entry(grp_fr, width=25)
+            ent_find.grid(row=0, column=1, sticky="w", padx=5, pady=2)
+            
+            ttk.Label(grp_fr, text="Replace:").grid(row=1, column=0, sticky="w", pady=2)
+            ent_replace = ttk.Entry(grp_fr, width=25)
+            ent_replace.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+            
+            ttk.Label(grp_fr, text="* Leave Replace empty to delete matches.", style="Panel.TLabel", font=("Consolas", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+            
+            # Index Manipulation Section
+            grp_idx = ttk.LabelFrame(top, text="Index Manipulation", padding=10)
+            grp_idx.pack(fill=tk.X, padx=15, pady=5)
+            
+            ttk.Label(grp_idx, text="Insert text:").grid(row=0, column=0, sticky="w")
+            ent_ins_txt = ttk.Entry(grp_idx, width=15)
+            ent_ins_txt.grid(row=0, column=1, padx=5)
+            ttk.Label(grp_idx, text="at index:").grid(row=0, column=2)
+            ent_ins_idx = ttk.Entry(grp_idx, width=5)
+            ent_ins_idx.grid(row=0, column=3, padx=5)
+            
+            ttk.Label(grp_idx, text="Remove:").grid(row=1, column=0, sticky="w", pady=5)
+            ent_rem_cnt = ttk.Entry(grp_idx, width=5)
+            ent_rem_cnt.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+            ttk.Label(grp_idx, text="chars at index:").grid(row=1, column=2)
+            ent_rem_idx = ttk.Entry(grp_idx, width=5)
+            ent_rem_idx.grid(row=1, column=3, padx=5)
+            
+            def _run_batch():
+                config = {
+                    "find": ent_find.get(),
+                    "replace": ent_replace.get(),
+                    "ins_txt": ent_ins_txt.get(),
+                    "ins_idx": int(ent_ins_idx.get()) if ent_ins_idx.get().isdigit() else None,
+                    "rem_cnt": int(ent_rem_cnt.get()) if ent_rem_cnt.get().isdigit() else None,
+                    "rem_idx": int(ent_rem_idx.get()) if ent_rem_idx.get().isdigit() else None
+                }
+                top.destroy()
+                threading.Thread(target=self._run_rename_batch, args=(selected, config), daemon=True).start()
+                
+            btn_frame = ttk.Frame(top)
+            btn_frame.pack(side="bottom", fill=tk.X, pady=10, padx=15)
+            ttk.Button(btn_frame, text="Cancel", command=top.destroy).pack(side="right", padx=5)
+            ttk.Button(btn_frame, text="Apply Matrix", command=_run_batch).pack(side="right", padx=5)
+
+    def _run_rename_single(self, selection, new_name):
+        item_id, src = selection
+        if not src.exists(): return
+        
+        target = src.parent / new_name
+        try:
+            src.rename(target)
+            self.root.after(
+                0,
+                lambda: self.tree.item(item_id, text=str(target), tags=("renamed",))
+            )
+            self.push_to_ledger("rename", [{"src": src, "dst": target}])
+            self.log(f"Renamed 1 item successfully.")
+        except Exception as e:
+            self.log(f"Rename failed: {e}")
+
+    def _run_rename_batch(self, selected, config):
+        self.root.after(0, lambda: self.progress.configure(mode="determinate", maximum=100))
+        self.root.after(0, lambda: self.progress.set(0))
+        
+        total = len(selected)
+        renamed_count = 0
+        ledger_entries = []
+        
+        find_p = config["find"]
+        rep_p = config["replace"]
+        
+        for i, (item_id, src) in enumerate(selected):
+            if not src.exists(): continue
+                
+            old_name = src.name
+            new_name = old_name
+            
+            # Find and Replace (supports standard string replacement/removal)
+            if find_p:
+                new_name = new_name.replace(find_p, rep_p)
+                
+            # Index Removal
+            if config["rem_cnt"] is not None and config["rem_idx"] is not None:
+                idx = config["rem_idx"]
+                cnt = config["rem_cnt"]
+                new_name = new_name[:idx] + new_name[idx + cnt:]
+                
+            # Index Insertion
+            if config["ins_txt"] and config["ins_idx"] is not None:
+                idx = config["ins_idx"]
+                new_name = new_name[:idx] + config["ins_txt"] + new_name[idx:]
+                
+            if new_name == old_name: continue
+            new_path = src.parent / new_name
+            
+            try:
+                src.rename(new_path)
+                ledger_entries.append({"src": src, "dst": new_path})
+                renamed_count += 1
+                self.root.after(
+                    0,
+                    lambda idx=item_id, np=str(new_path):
+                        self.tree.item(idx, text=np, tags=("renamed",))
+                )
+            except Exception as e:
+                self.log(f"Failed to rename {old_name}: {e}")
+                
+            val = int(((i + 1) / total) * 100)
+            self.root.after(0, lambda v=val: self.progress.set(v))
+            
+        self.push_to_ledger("rename", ledger_entries)
+        self.log(f"Mutation run ended. Transformed: {renamed_count}/{total} entities.")
+        self.root.after(0, lambda: self.progress.configure(mode="indeterminate"))
 
     # -- Export ------------------------------------------------------------------
     def export_results(self):
         if not self.tree.get_children():
             return messagebox.showinfo("Export", "No results to export.")
-        save_path = filedialog.asksaveasfilename(
-            defaultextension=".txt", filetypes=[("Text File", "*.txt"), ("CSV", "*.csv")])
-        if not save_path:
-            return
+        save_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text File", "*.txt"), ("CSV", "*.csv")])
+        if not save_path: return
         with open(save_path, "w", encoding="utf-8") as f:
             for item in self.tree.get_children():
                 children = self.tree.get_children(item)
@@ -372,22 +1065,22 @@ class BetterSearch:
             "fell_name": self.ent_fell_name.get(),
             "fell_cont_mode": self.cb_fell_cont_mode.get(),
             "fell_cont_text": self.ent_fell_cont_text.get(),
+            "theme": self.current_theme
             }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2)
-        except Exception:
-            pass
+        except Exception: pass
 
     def load_settings(self):
         try:
             with open(SETTINGS_FILE, encoding="utf-8") as f:
                 s = json.load(f)
-        except Exception:
-            return
+        except Exception: return
+        self.current_theme = s.get("theme", "dark")
         if s.get("target_folder"):
             self.target_folder = s["target_folder"]
-            self.lbl_folder.config(text=self.target_folder, foreground=GREEN)
+            self.lbl_folder.config(text=self.target_folder, foreground=GREEN if self.current_theme == "dark" else "#1a7f37")
         self.cb_file_type.set(s.get("file_type", "File"))
         self._set_entry(self.ent_name, s.get("name_pattern", "*"))
         self.var_name_regex.set(s.get("use_regex", False))
@@ -422,11 +1115,11 @@ class BetterSearch:
             return messagebox.showwarning("!", "Select a folder first.")
         self.is_searching = True
         self.stop_requested = False
-        # Both buttons transform into stop buttons
         self.btn_search.config(text="■  Stop", command=self.request_stop)
         self.btn_dupes.config(text="■  Stop", command=self.request_stop)
         self.tree.delete(*self.tree.get_children())
         self.files_processed = 0
+        self.progress.configure(mode="indeterminate")
         self.progress.start(1)
         threading.Thread(target=target, daemon=True).start()
 
@@ -442,9 +1135,6 @@ class BetterSearch:
         self._start_thread(self.run_search)
 
     def _parse_ext_filter(self):
-        """Return (include_set, exclude_set) from the extension field.
-        Entries starting with '-' go into exclude; all others into include.
-        """
         raw = [x.strip().lower() for x in self.ent_ext.get().split(";") if x.strip()]
         include = {e for e in raw if not e.startswith("-")}
         exclude = {e.lstrip("-") for e in raw if e.startswith("-")}
@@ -455,10 +1145,9 @@ class BetterSearch:
             root_path = Path(self.target_folder)
             found_count = 0
             results_buffer = []
-            # Pre-read all filter params (avoid per-iter tkinter calls)
             t_pref = self.cb_file_type.get()
             name_pattern = self.ent_name.get()
-            use_regex = self.var_name_regex.get()  # True → re.search, False → glob
+            use_regex = self.var_name_regex.get()
             exclude_list = [x.strip() for x in self.ent_exclude.get().split(";") if x.strip()]
             ext_inc, ext_exc = self._parse_ext_filter()
             min_sz = float(self.ent_min_size.get() or 0) * 1024
@@ -466,7 +1155,7 @@ class BetterSearch:
             days_mod = float(self.ent_days.get() or 0) * 86400
             days_crt = float(self.ent_cdays.get() or 0) * 86400
             max_depth = int(self.ent_depth.get() or 0)
-            root_depth = str(root_path).count(os.sep)  # used for fast depth check
+            root_depth = str(root_path).count(os.sep)
             now = time.time()
             c_mode = self.cb_cont_mode.get()
             c_text = self.ent_cont_text.get()
@@ -482,22 +1171,18 @@ class BetterSearch:
                     self.log("Search aborted.")
                     break
 
-                # Depth — fast string-count, no Path object creation
                 if max_depth > 0:
-                    if str(item).count(os.sep) - root_depth > max_depth:
-                        continue
+                    if str(item).count(os.sep) - root_depth > max_depth: continue
 
                 self.files_processed += 1
                 if self.files_processed % 250 == 0:
-                    self.lbl_counter.config(text=f"Found: {found_count}  /  Scanned: {self.files_processed}")
+                    self.root.after(0, lambda c=found_count, p=self.files_processed: self.lbl_counter.config(text=f"Found: {c}  /  Scanned: {p}"))
 
-                # 1. Type
                 is_file = item.is_file()
                 is_dir = not is_file
                 if t_pref == "File" and is_dir: continue
                 if t_pref == "Folder" and is_file: continue
 
-                # 2. Name pattern
                 if use_regex:
                     try:
                         if not re.search(name_pattern, item.name): continue
@@ -505,16 +1190,12 @@ class BetterSearch:
                 else:
                     if not item.match(name_pattern): continue
 
-                # 3. Exclusions
                 if any(ex in item.name for ex in exclude_list): continue
-
-                # 4. Extension filter (include/exclude)
                 if is_file:
                     suf = item.suffix.lower()
                     if ext_inc and suf not in ext_inc: continue
                     if ext_exc and suf in ext_exc: continue
 
-                # 5. Size / date
                 size_str = ctime_str = mtime_str = ""
                 if is_file:
                     try:
@@ -528,7 +1209,6 @@ class BetterSearch:
                         mtime_str = fmt_date(st.st_mtime)
                     except: continue
 
-                # 6. Content check
                 if c_mode != "Disabled" and is_file:
                     try:
                         with open(item, "r", encoding="utf-8", errors="ignore") as fh:
@@ -540,7 +1220,6 @@ class BetterSearch:
                         self.log(f"Skipped (read error): {item.name}")
                         continue
 
-                # 7. Sibling check
                 if f_mode != "Disabled" or fc_mode != "Disabled":
                     siblings = list(item.parent.glob(fell_name))
                     has_file_list = [s for s in siblings if s.is_file() and s != item]
@@ -564,22 +1243,22 @@ class BetterSearch:
                             except: continue
                         if not match_found: continue
 
-                # ✓ All filters passed
                 found_count += 1
                 results_buffer.append((str(item), size_str, ctime_str, mtime_str))
 
-            self.log(f"Loading {found_count} matches.")
-            self.lbl_counter.config(text=f"Loading {found_count} matches.")
-            for row in results_buffer:
-                self.tree.insert("", tk.END, text=row[0], values=row[1:])
-            results_buffer.clear()
-            self.log(f"Done. {found_count} matches  /  {self.files_processed} scanned.")
-            self.lbl_counter.config(text=f"Found: {found_count}  /  Scanned: {self.files_processed}")
+            def _finalize(b_res, f_cnt, f_proc):
+                self.log(f"Loading {f_cnt} matches.")
+                for row in b_res:
+                    self.tree.insert("", tk.END, text=row[0], values=row[1:])
+                self.log(f"Done. {f_cnt} matches  /  {f_proc} scanned.")
+                self.lbl_counter.config(text=f"Found: {f_cnt}  /  Scanned: {f_proc}")
+                
+            self.root.after(0, _finalize, list(results_buffer), found_count, self.files_processed)
 
         except Exception as e:
             self.log(f"Error: {e}")
         finally:
-            self._end_thread()
+            self.root.after(0, self._end_thread)
 
     # -- Find Duplicates ---------------------------------------------------------
     def start_dupe_thread(self):
@@ -588,8 +1267,6 @@ class BetterSearch:
     def run_find_dupes(self):
         try:
             root_path = Path(self.target_folder)
-
-            # Stage 1: group by size — no hashing yet
             self.log("Grouping by size...")
             size_map = {}
             for item in root_path.rglob("*"):
@@ -597,27 +1274,23 @@ class BetterSearch:
                 if not item.is_file(): continue
                 self.files_processed += 1
                 if self.files_processed % 250 == 0:
-                    self.lbl_counter.config(text=f"Scanned: {self.files_processed}")
-                try:
-                    size_map.setdefault(item.stat().st_size, []).append(item)
+                    self.root.after(0, lambda p=self.files_processed: self.lbl_counter.config(text=f"Scanned: {p}"))
+                try: size_map.setdefault(item.stat().st_size, []).append(item)
                 except: continue
 
             if self.stop_requested:
                 self.log("Aborted.")
                 return
 
-            # Stage 2: MD5-hash only size-collision candidates
             candidates = [f for files in size_map.values() if len(files) > 1 for f in files]
             self.log(f"Hashing {len(candidates)} candidates...")
             hash_map = {}
             for i, item in enumerate(candidates):
                 if self.stop_requested: break
-                try:
-                    h = file_hash(item)
-                    hash_map.setdefault(h, []).append(item)
+                try: hash_map.setdefault(file_hash(item), []).append(item)
                 except: continue
                 if i % 50 == 0:
-                    self.lbl_counter.config(text=f"Hashed: {i} / {len(candidates)}")
+                    self.root.after(0, lambda c=i, t=len(candidates): self.lbl_counter.config(text=f"Hashed: {c} / {t}"))
 
             dupes = {h: files for h, files in hash_map.items() if len(files) > 1}
 
@@ -627,35 +1300,29 @@ class BetterSearch:
 
             redundant = sum(len(v) - 1 for v in dupes.values())
             self.log(f"Found {len(dupes)} duplicate groups  ({redundant} redundant files).")
-            self.lbl_counter.config(text=f"Duplicate groups: {len(dupes)}")
+            self.root.after(0, lambda d=len(dupes): self.lbl_counter.config(text=f"Duplicate groups: {d}"))
 
-            for i, (_, files) in enumerate(sorted(dupes.items())):
-                if self.stop_requested:
-                    self.log("Aborted.")
-                    return
-                
-                try:
-                    sz_str = fmt_size(files[0].stat().st_size)
-                except:
-                    sz_str = "?"
-                group_node = self.tree.insert(
-                    "", tk.END, text=f"Group {i + 1}  ·  {len(files)} files  ·  {sz_str} each", tags=("group",), open=False)
-                for f in files:
-                    try:
-                        st = f.stat()
-                        size_str = fmt_size(st.st_size)
-                        ctime_str = fmt_date(get_ctime(st))
-                        mtime_str = fmt_date(st.st_mtime)
-                    except:
-                        size_str = ctime_str = mtime_str = ""
-                    self.tree.insert(group_node, tk.END, text=str(f), values=(size_str, ctime_str, mtime_str))
+            def _insert_dupes(d_dict):
+                for i, (_, files) in enumerate(sorted(d_dict.items())):
+                    try: sz_str = fmt_size(files[0].stat().st_size)
+                    except: sz_str = "?"
+                    group_node = self.tree.insert("", tk.END, text=f"Group {i + 1}  ·  {len(files)} files  ·  {sz_str} each", tags=("group",), open=False)
+                    for f in files:
+                        try:
+                            st = f.stat()
+                            size_str = fmt_size(st.st_size)
+                            ctime_str = fmt_date(get_ctime(st))
+                            mtime_str = fmt_date(st.st_mtime)
+                        except: size_str = ctime_str = mtime_str = ""
+                        self.tree.insert(group_node, tk.END, text=str(f), values=(size_str, ctime_str, mtime_str))
 
-            # self.tree.tag_configure("dup_odd", background=TAG_ODD)
-            # self.tree.tag_configure("dup_even", background=TAG_EVEN)
+            if not self.stop_requested:
+                self.root.after(0, _insert_dupes, dupes)
+
         except Exception as e:
             self.log(f"Error: {e}")
         finally:
-            self._end_thread()
+            self.root.after(0, self._end_thread)
 
 
 if __name__ == "__main__":
