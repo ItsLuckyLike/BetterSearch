@@ -4,7 +4,7 @@
 Light-weight, fast and advanced. Search for files or duplicates using many advanced filters. You can easily manage the results, too!
 If you work a lot with files, or, need to manage your 9.5-year-old family photo's back-up HDD, BetterSearch is your go-to.
 
-[![Download](https://img.shields.io/badge/Download_latest_version-v1.1.0-00f000)](https://github.com/itsLuckyLike/BetterSearch/releases)
+[![Download](https://img.shields.io/badge/Download_latest_version-v1.1.0-00f000)](https://github.com/itsLuckyLike/BetterSearch/releases/v1.1)
  
 ### Why BetterSearch?
 Traditional search tools are often slow and cannot filter by complex metadata or perform batch operations on results. BetterSearch gives you granular control over your file system without the indexing overhead.
@@ -22,7 +22,7 @@ Traditional search tools are often slow and cannot filter by complex metadata or
 <img width="1919" height="1018" alt="image" src="https://github.com/user-attachments/assets/ab4636fc-89a7-4a4a-b286-9e411223d1ba" />
 
 ## Getting started
-1. Download and run BetterSearch using [Python](https://www.python.org/downloads/) (3.7 or up)
+1. [Download](https://github.com/ItsLuckyLike/BetterSearch/releases/v1.1) and run BetterSearch using [Python](https://www.python.org/downloads/) (3.7 or up)
 2. Select a folder at the top-left
 3. Under "Basic Filters", type something you want to find. Use * for wildcards (i.e. wishlist *.doc)
 4. Click [Start Search] at the bottom and wait for it to show your files! (i.e. wishlist 2006.doc)
