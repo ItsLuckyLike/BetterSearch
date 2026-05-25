@@ -14,10 +14,11 @@ Traditional search tools are often slow and cannot filter by complex metadata or
 - Batch management: update thousands of files in one go
 
 ### Who is BetterSearch for?
-- Anyone: Find duplicate files across your workspaces or use every known piece of info to narrow down the search for lost files
-- Developers: Find outdated configs or files acting on one-another
-- Archivists: Navigate complex file systems for duplicates or group files for research
-- Recoverers: Move and copy files securely with MD5 integration
+For everyone working with hundreds of files. With BetterSearch, you can do it all.
+- Anyone can use it to find duplicate files across your workspaces or use every known piece of info to narrow down the search for lost files
+- Developers can use it to find outdated configs or files acting on one-another
+- Archivists can use it to navigate complex file systems for duplicates or group files for research
+- Recoverers can use it to move and copy files securely with MD5 integration
 
 <img width="1919" height="1018" alt="image" src="https://github.com/user-attachments/assets/ab4636fc-89a7-4a4a-b286-9e411223d1ba" />
 
